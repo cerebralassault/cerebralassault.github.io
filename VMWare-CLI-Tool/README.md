@@ -1,7 +1,12 @@
-
 # vCenter Automation Script
 
 This script helps you connect to a vCenter server, scan for VMs, and get details like OS, BIOS, domains, and notes (annotations). You can also filter VMs, check snapshots, or see which ones need VMware Tools updates—all from an easy-to-use menu.
+#### Note: 
+
+This script utilizes [Elevated_PowerShell_Launcher_with_Execution_Policy_Bypass](https://gist.github.com/cerebralassault/10860fa69f7926fad8b1fa327ec7a650) 
+
+This enhanced batch wrapper simplifies running PowerShell scripts in restricted environments by offering two valuable features: - ​Execution Policy Bypass: With the `-ExecutionPolicy Bypass` flag, this wrapper allows PowerShell scripts to run smoothly, even in environments with strict execution policies. It does this without altering any system-wide settings, making it especially useful in managed or locked-down systems. - Automatic Admin Elevation: By using `Start-Process -Verb RunAs`, the wrapper automatically requests administrator permissions, so users dont need to select "Run as Administrator" manually. This is particularly helpful for tasks that need elevated permissions, such as modifying system files or managing services.​ Simply create a .cmd file and paste this in, then add your script below the final line. I've found this to be moderately useful, hopefully some of you feel the same.
+
 
 ---
 
