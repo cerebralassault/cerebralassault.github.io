@@ -35,4 +35,4 @@ To use it, paste the batch stub at the top of a `.cmd` file, then append this sc
 1. Save this script (or `.cmd` with wrapper) locally.
 2. Run it by double-clicking or from an elevated command prompt:
    ```powershell
-   vCenter_Dashboard.cmd
+   VMWare-CLI-Tool.cmd
