@@ -11,23 +11,32 @@ exit /b %ec%
 
 :# End of the PowerShell comment around the Batch section #>
 
+<# vCenter VM Dashboard (GUI-only)
+   - Windows PowerShell 5.1 (Win11 default)
+   - Requires VMware PowerCLI (v13+)
+   - vSphere 7.0+
+   - No credential caching; prompts every run
+   - No internet resources
+#>
+
 # --- WinForms setup ---
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
+[System.Windows.Forms.Application]::SetCompatibleTextRenderingDefault($false)
 
 # --- Config ---
-$vcenter = 'vcenter.example.com'   # fixed server
+$vcenter = 'vcenter.example.com'   # fixed server (edit for your env)
 $recentDeletionDays = 14
 $defaultSnapshotAgeDays = 7
 
-# --- Load PowerCLI ---
+# --- Load PowerCLI (module form) ---
 try {
     if (-not (Get-Module -ListAvailable -Name VMware.PowerCLI)) {
         throw "VMware PowerCLI is not installed or not on PSModulePath."
     }
     Import-Module VMware.PowerCLI -ErrorAction Stop
-    # Avoid GUI prompts on untrusted certs in THIS session only
+    # Avoid trust prompts for self-signed vCenter certs in THIS session only
     Set-PowerCLIConfiguration -Scope Session -InvalidCertificateAction Ignore -Confirm:$false | Out-Null
 } catch {
     [System.Windows.Forms.MessageBox]::Show("PowerCLI not available.`r`n$($_.Exception.Message)",
@@ -49,7 +58,6 @@ function New-Grid($x,$y,$w,$h){
     $g.AutoSizeColumnsMode='AllCells'
     $g.SelectionMode='FullRowSelect'
     $g.MultiSelect=$false
-    $g.Dock = 'None'
     $g
 }
 function Show-InGrid($grid,$data){
@@ -90,33 +98,36 @@ function Disconnect-IfConnected {
     } catch {}
 }
 
-# --- Data funcs ---
+# --- Data funcs (perf + null safety) ---
 function Get-EnvironmentData {
-    # Fast pull with Get-View to minimize per-VM round trips
-    $views = Get-View -ViewType VirtualMachine -Property Name,Config.GuestFullName,Guest.HostName,Config.Version,Runtime.PowerState
+    # one roundtrip per VM; request only needed properties
+    $views = Get-View -ViewType VirtualMachine -Property Name,Config,Guest,Runtime
     $vms = foreach($v in $views){
-        $domain = ""
-        if ($v.Guest.HostName -and ($v.Guest.HostName -like "*.*")){
+        $os = $v.Config.GuestFullName
+        $hw = $v.Config.Version                # vmx-xx
+        $notes = $v.Config.Annotation          # vSphere “Notes”
+        $domain = $v.Guest.Domain
+        if (-not $domain -and $v.Guest.HostName -and ($v.Guest.HostName -like "*.*")){
             $parts = $v.Guest.HostName -split '\.'
             if ($parts.Length -gt 1){ $domain = ($parts[1..($parts.Length-1)] -join '.') }
         }
         [PSCustomObject]@{
-            Name   = $v.Name
-            OS     = $v.Config.GuestFullName
-            HardwareVersion = $v.Config.Version   # vmx-xx; aligns with .HardwareVersion on Get-VM
-            Domain = $domain
-            Notes  = (Get-VM -Id $v.MoRef | Select-Object -ExpandProperty Notes)
+            Name            = $v.Name
+            OS              = $os
+            HardwareVersion = $hw
+            Domain          = $domain
+            Notes           = $notes
         }
     }
-    $os    = ($vms | Select-Object -ExpandProperty OS    | Where-Object {$_} | Sort-Object -Unique)
-    $hw    = ($vms | Select-Object -ExpandProperty HardwareVersion | Where-Object {$_} | Sort-Object -Unique)
-    $doms  = ($vms | Select-Object -ExpandProperty Domain| Sort-Object -Unique)
     @{
-        VMs=$vms; OS=$os; HW=$hw; Domain=$doms
+        VMs    = $vms
+        OS     = ($vms | Select-Object -ExpandProperty OS -ErrorAction Ignore | Where-Object { $_ } | Sort-Object -Unique)
+        HW     = ($vms | Select-Object -ExpandProperty HardwareVersion -ErrorAction Ignore | Where-Object { $_ } | Sort-Object -Unique)
+        Domain = ($vms | Select-Object -ExpandProperty Domain -ErrorAction Ignore | Sort-Object -Unique)
     }
 }
 
-# --- Login form (fixed server shown, editable if you want) ---
+# --- Login form (fixed server shown) ---
 $login = New-Object System.Windows.Forms.Form
 $login.Text = "Connect to vCenter"
 $login.StartPosition = 'CenterScreen'
@@ -125,12 +136,14 @@ $login.FormBorderStyle = 'FixedDialog'
 $login.MaximizeBox = $false
 
 $lblServer = New-Label "vCenter:" 20 25
-$txtServer = New-Object System.Windows.Forms.TextBox; $txtServer.Location=New-Object Drawing.Point(120,22); $txtServer.Width=260; $txtServer.Text=$vcenter
+$txtServer = New-Object System.Windows.Forms.TextBox
+$txtServer.Location=New-Object Drawing.Point(120,22)
+$txtServer.Width=260
+$txtServer.Text=$vcenter
 $txtServer.ReadOnly = $true
 
 $btnConn = New-Button "Connect" 120 70
 $btnCancel = New-Button "Cancel" 240 70
-
 $login.Controls.AddRange(@($lblServer,$txtServer,$btnConn,$btnCancel))
 
 $connected = $false
@@ -162,23 +175,17 @@ $tab5 = New-Object System.Windows.Forms.TabPage; $tab5.Text="Outdated Tools"
 $tab6 = New-Object System.Windows.Forms.TabPage; $tab6.Text="Patch Compliance"
 $tabs.TabPages.AddRange(@($tab1,$tab2,$tab3,$tab4,$tab5,$tab6))
 
-# --- Tab 1: Recent deletions (last N days, uses FullFormattedMessage) ---
+# --- Tab 1: Recent deletions (last N days) ---
 $lbl1 = New-Label "VM removals in the last $recentDeletionDays days" 10 10
 $btn1 = New-Button "Refresh" 10 35
 $grid1 = New-Grid 10 70 1060 580
 $tab1.Controls.AddRange(@($lbl1,$btn1,$grid1))
-
 $btn1.Add_Click({
     try {
         $since = (Get-Date).AddDays(-$recentDeletionDays)
-        # Server-side bounded query
-        $events = Get-VIEvent -Start $since -MaxSamples 5000 | Where-Object { $_.GetType().Name -eq 'VmRemovedEvent' }
+        $events = Get-VIEvent -Start $since | Where-Object { $_ -is [VMware.Vim.VmRemovedEvent] }
         $rows = $events | Sort-Object CreatedTime -Descending | ForEach-Object {
-            [PSCustomObject]@{
-                Time  = $_.CreatedTime
-                User  = $_.UserName
-                Info  = $_.FullFormattedMessage
-            }
+            [PSCustomObject]@{ Time=$_.CreatedTime; User=$_.UserName; Info=$_.FullFormattedMessage }
         }
         Show-InGrid $grid1 $rows
     } catch { [System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)") | Out-Null }
@@ -193,7 +200,6 @@ $lbl2c = New-Label "Domain" 590 12
 $cbDom = New-Combo 650 8 250
 $btnExport = New-Button "Export CSV" 910 6 160
 $grid2 = New-Grid 10 40 1060 580
-
 $tab2.Controls.AddRange(@($lbl2a,$cbOS,$lbl2b,$cbHW,$lbl2c,$cbDom,$btnExport,$grid2))
 
 $envData = $null
@@ -213,7 +219,6 @@ function Refresh-EnvData {
         [System.Windows.Forms.MessageBox]::Show("Failed to scan environment.`r`n$($_.Exception.Message)","Error") | Out-Null
     }
 }
-
 $onFilterChanged = {
     if (-not $envData){ return }
     $q = $envData.VMs
@@ -242,7 +247,7 @@ $btnExport.Add_Click({
     }
 })
 
-# --- Tab 3: Snapshots older than N days ---
+# --- Tab 3: Snapshots older than N days (flatten tree via Get-View) ---
 $lbl3 = New-Label "List snapshots older than N days" 10 10
 $lbl3days = New-Label "Days:" 260 10
 $numDays = New-Object System.Windows.Forms.NumericUpDown
@@ -254,13 +259,27 @@ $numDays.Value = $defaultSnapshotAgeDays
 $btn3 = New-Button "Refresh" 380 6
 $grid3 = New-Grid 10 40 1060 580
 $tab3.Controls.AddRange(@($lbl3,$lbl3days,$numDays,$btn3,$grid3))
-
 $btn3.Add_Click({
     try {
         $threshold = (Get-Date).AddDays(-[int]$numDays.Value)
-        $snaps = Get-VM | Get-Snapshot | Where-Object { $_.Created -lt $threshold } |
-                 Select-Object @{N='VM';E={$_.VM.Name}}, Name, Description, @{N='CreatedOn';E={$_.Created}}
-        Show-InGrid $grid3 $snaps
+        $views = Get-View -ViewType VirtualMachine -Property Name,Snapshot
+        $rows = foreach ($v in $views) {
+            $tree = $v.Snapshot.RootSnapshotList
+            if (-not $tree) { continue }
+            $stack = New-Object System.Collections.Stack
+            $stack.Push($tree)
+            while ($stack.Count -gt 0) {
+                $node = $stack.Pop()
+                foreach ($sn in $node) {
+                    if ($sn.CreateTime -lt $threshold) {
+                        [PSCustomObject]@{ VM=$v.Name; Name=$sn.Name; Description=$sn.Description; CreatedOn=$sn.CreateTime }
+                    }
+                    if ($sn.ChildSnapshotList) { $stack.Push($sn.ChildSnapshotList) }
+                }
+            }
+        }
+        $rows = $rows | Sort-Object VM, CreatedOn
+        Show-InGrid $grid3 $rows
     } catch { [System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)") | Out-Null }
 })
 
@@ -270,15 +289,10 @@ $grid4 = New-Grid 10 40 1060 580
 $tab4.Controls.AddRange(@($btn4,$grid4))
 $btn4.Add_Click({
     try {
-        # ToolsStatus toolsNotInstalled
-        $views = Get-View -ViewType VirtualMachine -Property Name,Guest.ToolsStatus,Guest.GuestFullName
+        $views = Get-View -ViewType VirtualMachine -Property Name,Guest
         $rows = $views | Where-Object { $_.Guest.ToolsStatus -eq 'toolsNotInstalled' } |
                 Sort-Object Name | ForEach-Object {
-                    [PSCustomObject]@{
-                        Name = $_.Name
-                        OS   = $_.Guest.GuestFullName
-                        ToolsStatus = $_.Guest.ToolsStatus
-                    }
+                    [PSCustomObject]@{ Name=$_.Name; OS=$_.Guest.GuestFullName; ToolsStatus=$_.Guest.ToolsStatus }
                 }
         Show-InGrid $grid4 $rows
     } catch { [System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)") | Out-Null }
@@ -290,27 +304,25 @@ $grid5 = New-Grid 10 40 1060 580
 $tab5.Controls.AddRange(@($btn5,$grid5))
 $btn5.Add_Click({
     try {
-        # Prefer ToolsVersionStatus2 when available; fallback to ToolsStatus == toolsOld
-        $views = Get-View -ViewType VirtualMachine -Property Name,Guest.ToolsVersionStatus2,Guest.ToolsStatus,Guest.GuestFullName
+        $views = Get-View -ViewType VirtualMachine -Property Name,Guest
         $rows = $views | Where-Object {
             $_.Guest.ToolsVersionStatus2 -eq 'guestToolsSupportedOld' -or $_.Guest.ToolsStatus -eq 'toolsOld'
         } | Sort-Object Name | ForEach-Object {
             [PSCustomObject]@{
                 Name  = $_.Name
                 OS    = $_.Guest.GuestFullName
-                Tools = if ($_.Guest.ToolsVersionStatus2) { $_.Guest.ToolsVersionStatus2 } else { $_.Guest.ToolsStatus }
+                Tools = (if ($_.Guest.ToolsVersionStatus2) { $_.Guest.ToolsVersionStatus2 } else { $_.Guest.ToolsStatus })
             }
         }
         Show-InGrid $grid5 $rows
     } catch { [System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)") | Out-Null }
 })
 
-# --- Tab 6: Patch compliance (baseline mode); note: vLCM image clusters use different cmdlets ---
-$lbl6 = New-Label "Checks ESXi host patch compliance via baselines (Lifecycle Manager). For image-managed clusters, use LCM cmdlets." 10 10
+# --- Tab 6: Patch compliance (VUM baselines) ---
+$lbl6 = New-Label "Checks ESXi host patch compliance via baselines (Lifecycle Manager)." 10 10
 $btn6 = New-Button "Check Compliance" 10 35
 $grid6 = New-Grid 10 70 1060 580
 $tab6.Controls.AddRange(@($lbl6,$btn6,$grid6))
-
 $btn6.Add_Click({
     try {
         if (-not (Get-Module -ListAvailable -Name VMware.VumAutomation)){
@@ -318,15 +330,10 @@ $btn6.Add_Click({
             return
         }
         Import-Module VMware.VumAutomation -ErrorAction Stop
-        # Optional: kick a scan so results are fresh
         Get-VMHost | Test-Compliance | Out-Null
         Start-Sleep -Seconds 2
         $comp = Get-VMHost | Get-Compliance | ForEach-Object {
-            [PSCustomObject]@{
-                Host     = $_.Entity
-                Baseline = $_.Baseline
-                Status   = $_.ComplianceStatus
-            }
+            [PSCustomObject]@{ Host=$_.Entity; Baseline=$_.Baseline; Status=$_.ComplianceStatus }
         }
         Show-InGrid $grid6 $comp
     } catch { [System.Windows.Forms.MessageBox]::Show("Error: $($_.Exception.Message)") | Out-Null }
