@@ -1,0 +1,32 @@
+title: Morley Blog
+description: >-
+  A place for notes, projects, and ideas.
+baseurl: "" # empty since it's at the root of blog.morley.dev
+url: "https://blog.morley.dev"
+
+# Social handles (optional)
+twitter_username: yourhandle
+github_username: yourgithub
+
+# Theme
+theme: minima
+
+# Plugins useful for blogs
+plugins:
+  - jekyll-feed      # RSS/Atom feed
+  - jekyll-seo-tag   # SEO tags
+  - jekyll-paginate  # pagination
+  - jekyll-sitemap   # sitemap.xml
+
+# Blog-specific settings
+paginate: 5
+paginate_path: "/page:num/"
+
+# Defaults for posts
+defaults:
+  - scope:
+      path: ""
+      type: "posts"
+    values:
+      layout: "post"
+      author: "Ian Morley"
