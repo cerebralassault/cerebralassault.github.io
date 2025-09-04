@@ -9,7 +9,7 @@ twitter_username: yourhandle
 github_username: yourgithub
 
 # Theme
-theme: minima
+theme: jekyll-theme-midnight
 
 # Plugins useful for blogs
 plugins:
