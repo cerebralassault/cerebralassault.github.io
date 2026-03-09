@@ -1,6 +1,3 @@
----
-layout: default
----
 # About Me
 
 I am a Cloud Systems Engineer with nearly two decades of enterprise systems experience and nine years leading Azure-focused hybrid environments. I structure and implement cloud migrations, enhance security posture, and provide a robust disaster recovery plan across regulated and high-availability infrastructures. I work in Azure, identity architecture, SIEM implementation, and infrastructure automation using PowerShell and IaC (Kubernetes, Bicep, Terraform, Ansible) practices. My objective is to turn business risk into a solution that is practical in terms of technology, achieving cost-effectiveness at scale and performance: to drive teams to achieve modernization initiatives that enhance reliability and security.
